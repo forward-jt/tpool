@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdbool.h>
 
 enum __future_flags {
     __FUTURE_RUNNING = 01,
@@ -19,7 +20,7 @@ typedef struct __threadtask {
 } threadtask_t;
 
 typedef struct __jobqueue {
-    threadtask_t *head, *tail;
+    threadtask_t *head, **tail;
     pthread_cond_t cond_nonempty;
     pthread_mutex_t rwlock;
 } jobqueue_t;
@@ -99,7 +100,8 @@ static jobqueue_t *jobqueue_create(void)
 {
     jobqueue_t *jobqueue = malloc(sizeof(jobqueue_t));
     if (jobqueue) {
-        jobqueue->head = jobqueue->tail = NULL;
+        jobqueue->head = NULL;
+        jobqueue->tail = &jobqueue->head;
         pthread_cond_init(&jobqueue->cond_nonempty, NULL);
         pthread_mutex_init(&jobqueue->rwlock, NULL);
     }
@@ -149,21 +151,16 @@ static void *jobqueue_fetch(void *queue)
         pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &old_state);
         pthread_testcancel();
 
-        while (!jobqueue->tail)
+        while (!jobqueue->head)
             pthread_cond_wait(&jobqueue->cond_nonempty, &jobqueue->rwlock);
         
         pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_state);
-        if (jobqueue->head == jobqueue->tail) {
-            task = jobqueue->tail;
-            jobqueue->head = jobqueue->tail = NULL;
-        } else {
-            threadtask_t *tmp;
-            for (tmp = jobqueue->head; tmp->next != jobqueue->tail;
-                 tmp = tmp->next)
-                ;
-            task = tmp->next;
-            tmp->next = NULL;
-            jobqueue->tail = tmp;
+        task = jobqueue->head;
+        if (task) {
+            jobqueue->head = task->next;
+            task->next = NULL;
+            if (jobqueue->tail == &task->next)
+                jobqueue->tail = &jobqueue->head;
         }
         pthread_mutex_unlock(&jobqueue->rwlock);
 
@@ -244,21 +241,21 @@ struct __tpool_future *tpool_apply(struct __threadpool *pool,
                                    void *arg)
 {
     jobqueue_t *jobqueue = pool->jobqueue;
-    threadtask_t *new_head = malloc(sizeof(threadtask_t));
+    threadtask_t *new_tail = malloc(sizeof(threadtask_t));
     struct __tpool_future *future = tpool_future_create();
-    if (new_head && future) {
-        new_head->func = func, new_head->arg = arg, new_head->future = future;
+    bool is_empty;
+    if (new_tail && future) {
+        new_tail->func = func, new_tail->arg = arg, new_tail->future = future;
+        new_tail->next = NULL;
         pthread_mutex_lock(&jobqueue->rwlock);
-        if (jobqueue->head) {
-            new_head->next = jobqueue->head;
-            jobqueue->head = new_head;
-        } else {
-            jobqueue->head = jobqueue->tail = new_head;
+        is_empty = &jobqueue->head == jobqueue->tail;
+        *(jobqueue->tail) = new_tail;
+        jobqueue->tail = &new_tail->next;
+        if (is_empty)
             pthread_cond_broadcast(&jobqueue->cond_nonempty);
-        }
         pthread_mutex_unlock(&jobqueue->rwlock);
-    } else if (new_head) {
-        free(new_head);
+    } else if (new_tail) {
+        free(new_tail);
         return NULL;
     } else if (future) {
         tpool_future_destroy(future);
