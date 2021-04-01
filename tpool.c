@@ -243,12 +243,11 @@ struct __tpool_future *tpool_apply(struct __threadpool *pool,
     jobqueue_t *jobqueue = pool->jobqueue;
     threadtask_t *new_tail = malloc(sizeof(threadtask_t));
     struct __tpool_future *future = tpool_future_create();
-    bool is_empty;
     if (new_tail && future) {
         new_tail->func = func, new_tail->arg = arg, new_tail->future = future;
         new_tail->next = NULL;
         pthread_mutex_lock(&jobqueue->rwlock);
-        is_empty = &jobqueue->head == jobqueue->tail;
+        bool is_empty = &jobqueue->head == jobqueue->tail;
         *(jobqueue->tail) = new_tail;
         jobqueue->tail = &new_tail->next;
         if (is_empty)
